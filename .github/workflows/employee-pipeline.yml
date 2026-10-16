@@ -1,0 +1,317 @@
+
+# ============================================================
+# WORKFLOW NAME
+# ============================================================
+# This is the name displayed in the GitHub Actions tab.
+
+name: Employee Data CI-CD
+
+# ============================================================
+# WORKFLOW TRIGGERS
+# ============================================================
+# Defines WHEN the workflow should execute.
+#
+# 1. pull_request:
+#    Run the CI checks when someone opens or updates a pull
+#    request targeting the main branch.
+#
+# 2. push:
+#    Run the workflow whenever commits are pushed to main.
+#
+# 3. workflow_dispatch:
+#    Allows you to run the workflow manually from GitHub Actions.
+
+on:
+  pull_request:
+    branches: [main]
+
+  push:
+    branches: [main]
+
+  workflow_dispatch:
+
+
+# ============================================================
+# PERMISSIONS
+# ============================================================
+# Defines the permissions granted to the GitHub Actions token.
+#
+# Write allows the deployment job to commit and push
+# the generated cleaned dataset back to the repository.
+
+
+permissions:
+  contents: write
+
+
+# ============================================================
+# JOBS
+# ============================================================
+# A workflow can contain multiple jobs.
+#
+# This workflow has two jobs:
+#   1. test   - Continuous Integration (CI)
+#   2. deploy - Continuous Deployment (CD)
+#
+# The deploy job depends on the test job succeeding.
+
+
+jobs:
+
+  # ==========================================================
+  # JOB 1: CONTINUOUS INTEGRATION (CI)
+  # ==========================================================
+  # This job checks that the code and cleaned dataset are valid.
+  # It runs unit tests, executes the cleaning script, and checks
+  # the quality of the resulting employee dataset.
+  # If any step fails, the job fails and deployment is blocked.
+
+  test:
+    name: Test and validate employee data
+
+    # GitHub provides a temporary Ubuntu virtual machine.
+    # Your commands will execute inside this runner.
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ------------------------------------------------------
+      # STEP 1: CHECK OUT THE REPOSITORY
+      # ------------------------------------------------------
+      # Downloads your repository files into the runner.
+      # This gives the workflow access to your Python code,
+      # raw dataset, tests, and requirements.txt file.
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ------------------------------------------------------
+      # STEP 2: SET UP PYTHON
+      # ------------------------------------------------------
+      # Installs Python 3.12 on the runner.
+      # cache: pip enables dependency caching to speed up
+      # subsequent workflow runs when dependencies are unchanged.
+      # Ensure requirements.txt exists for pip caching.
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+
+      # ------------------------------------------------------
+      # STEP 3: INSTALL PROJECT DEPENDENCIES
+      # ------------------------------------------------------
+      # Upgrades pip and installs the Python packages needed
+      # by your cleaning script and tests.
+      # Examples might include pandas and pytest.
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+
+      # ------------------------------------------------------
+      # STEP 4: RUN UNIT TESTS
+      # ------------------------------------------------------
+      # Executes the automated tests in your project.
+      # -m pytest runs pytest as a Python module.
+      # -v provides verbose output so individual tests are shown.
+      # If a test fails, this command returns a non-zero exit code
+      # and GitHub Actions marks the step as failed.
+
+      - name: Run unit tests
+        run: python -m pytest -v
+
+
+      # ------------------------------------------------------
+      # STEP 5: CLEAN THE EMPLOYEE DATASET
+      # ------------------------------------------------------
+      # Runs your Python data-cleaning module.
+      #
+      # --input specifies the source CSV file.
+      # --output specifies where the cleaned CSV will be saved.
+     
+
+      - name: Clean employee dataset
+        run: |
+          python -m src.clean_employees \
+            --input data/raw/Employee-data.csv \
+            --output data/processed/employees_clean.csv
+
+
+      # ------------------------------------------------------
+      # STEP 6: VALIDATE THE CLEANED DATASET
+      # ------------------------------------------------------
+      # Performs basic data quality checks using pandas.
+      #
+      # Checks:
+      # 1. The EmployeeID column exists.
+      # 2. The dataset contains at least one record.
+      # 3. EmployeeID has no missing values.
+      # 4. EmployeeID values are unique.
+    
+
+      - name: Validate cleaned dataset
+        run: |
+          python - <<'PY'
+          import pandas as pd
+
+          # Load the output generated by the cleaning script.
+          df = pd.read_csv(
+              "data/processed/employees_clean.csv"
+          )
+
+          # Check that the employee identifier is present.
+          assert "EmployeeID" in df.columns, (
+              "Required column EmployeeID is missing"
+          )
+
+          # Reject empty output datasets.
+          assert len(df) > 0, (
+              "Cleaned dataset is empty"
+          )
+
+          # Ensure every record has an employee identifier.
+          assert df["EmployeeID"].notna().all(), (
+              "EmployeeID contains missing values"
+          )
+
+          # Ensure employee identifiers are unique.
+          assert df["EmployeeID"].is_unique, (
+              "Duplicate EmployeeID values detected"
+          )
+
+          # Print confirmation in the Actions logs.
+          print("Data quality checks passed")
+          print(f"Validated records: {len(df)}")
+          PY
+
+
+  # ==========================================================
+  # JOB 2: CONTINUOUS DEPLOYMENT (CD)
+  # ==========================================================
+  # This job publishes the cleaned dataset back to GitHub.
+  # It only runs after the test job succeeds AND the workflow
+  # was triggered by a push to the main branch.
+
+
+  deploy:
+    name: Publish cleaned employee dataset
+
+    # JOB DEPENDENCY
+    # Wait for the test job to complete successfully.
+    # If test fails, deploy will not run.
+    needs: test
+
+    # DEPLOYMENT CONDITION
+    # Only deploy when:
+    # 1. The triggering event is a push.
+    # 2. The target ref is the main branch.
+    # workflow_dispatch and pull_request will not deploy.
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ------------------------------------------------------
+      # STEP 1: CHECK OUT THE REPOSITORY
+      # ------------------------------------------------------
+      # Retrieves the repository files for the deployment job.
+      # Each GitHub Actions job uses a separate runner, so the
+      # cleaned file generated in the test job is not automatically
+      # available here. This job checks out the repository again.
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ------------------------------------------------------
+      # STEP 2: SET UP PYTHON
+      # ------------------------------------------------------
+      # Installs the same Python version used during CI.
+      # Matching versions helps keep the pipeline consistent.
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+
+      # ------------------------------------------------------
+      # STEP 3: INSTALL DEPENDENCIES
+      # ------------------------------------------------------
+      # Installs the libraries needed to generate the production
+      # version of the cleaned employee dataset.
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+
+      # ------------------------------------------------------
+      # STEP 4: GENERATE THE PRODUCTION DATASET
+      # ------------------------------------------------------
+      # Executes the data-cleaning script again in the deploy job.
+
+
+      - name: Generate production dataset
+        run: |
+          python -m src.clean_employees \
+            --input data/raw/Employee-data.csv \
+            --output data/processed/employees_clean.csv
+
+
+      # ------------------------------------------------------
+      # STEP 5: PUBLISH THE CLEANED DATASET
+      # ------------------------------------------------------
+      # Configures the Git identity used for the automated commit.
+      #
+      # git add stages the generated CSV file.
+      #
+      # git diff --cached --quiet checks whether the staged
+      # dataset differs from the current Git version.
+      #
+      # If changes exist:
+      #   1. Commit the cleaned dataset.
+      #   2. Push the commit to the remote repository.
+      #
+      # If no changes exist, skip the commit.
+      #
+      # NOTE:
+      # The workflow token must have permission to push.
+      # Repository rules or branch protection may also prevent it.
+
+      - name: Publish cleaned dataset
+        run: |
+
+          # Configure the GitHub Actions bot identity.
+          git config user.name "github-actions[bot]"
+
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Stage only the cleaned employee dataset.
+          git add data/processed/employees_clean.csv
+
+          # Check whether the staged file has changed.
+          if ! git diff --cached --quiet; then
+
+            # Create a commit containing the updated dataset.
+            git commit -m "Publish cleaned employee dataset"
+
+            # Push the commit to the current branch.
+            git push
+
+          else
+
+            # No commit is needed if the dataset is unchanged.
+            echo "No changes to publish"
+
+          fi
